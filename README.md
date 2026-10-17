@@ -34,3 +34,33 @@ docker build --build-arg HF_TOKEN=$HF_TOKEN --build-arg CIVITAI_API_KEY=$CIVITAI
 - `workflow.json` — the raw workflow, as you designed it in ComfyUI
 - `api-workflow.json` — converted to ComfyUI's `/prompt` API shape (use this for serverless)
 - `README.md` — this file
+
+## Face-age model assets
+
+Building this Dockerfile now bakes these pinned model snapshots into the image:
+
+| Asset | Path inside the worker |
+| --- | --- |
+| `prithivMLmods/facial-age-detection` inference snapshot | `/comfyui/models/rapidgen/facial-age-detection/` |
+| OpenCV YuNet face detector | `/comfyui/models/rapidgen/face_detection_yunet_2023mar.onnx` |
+
+The age snapshot includes `config.json`, `preprocessor_config.json`, and
+`model.safetensors`. Training checkpoints and optimizer state are excluded.
+`AGE_MODEL_REVISION` and `FACE_DETECTOR_REVISION` build arguments pin the upstream
+revisions; override them deliberately when upgrading the models.
+
+The Dockerfile sets `RAPIDGEN_AGE_MODEL_DIR`, `RAPIDGEN_FACE_DETECTOR`, and
+`RAPIDGEN_AGE_DEVICE=cpu` for the RapidGen face-age node. The files are already in
+the built image, so the node can load them offline without a network volume or
+startup download. A volume mounted over `/comfyui/models` hides the baked files;
+if you use one, populate it or override the paths to a directory that contains
+the assets.
+
+This change installs model files only. The custom ComfyUI node, its Python
+dependencies, workflow gate wiring, and RunPod outcome handling must also be
+installed before the scanner can run. The node and integration instructions are
+in [rapidgen-ai PR #1](https://github.com/T-Ph525/rapidgen-ai/pull/1).
+
+Rebuild and deploy your image to use these assets. The previously published
+`runpod/comfyui-wizard:kd735q8y3ek2k59tz7v7w3tah58c4c3q` image above does not acquire
+Dockerfile changes automatically.
