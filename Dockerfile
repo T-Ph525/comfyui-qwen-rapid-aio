@@ -28,3 +28,21 @@ RUN test -s "${RAPIDGEN_AGE_MODEL_DIR}/config.json" \
     && test -s "${RAPIDGEN_AGE_MODEL_DIR}/preprocessor_config.json" \
     && test -s "${RAPIDGEN_AGE_MODEL_DIR}/model.safetensors" \
     && test -s "${RAPIDGEN_FACE_DETECTOR}"
+
+
+# Install the local gate in ComfyUI's Python environment; reuse the base torch.
+COPY requirements-age-gate.txt /requirements-age-gate.txt
+RUN python -m pip install --no-cache-dir -r /requirements-age-gate.txt
+COPY custom_nodes/rapidgen_age_gate /comfyui/custom_nodes/rapidgen_age_gate
+
+# Keep the pinned base worker's WebSocket, S3 and startup behavior. The wrapper
+# adds mandatory gates and rejects failed history BEFORE its S3 upload loop.
+RUN python -c "from pathlib import Path; import hashlib; data=Path('/handler.py').read_bytes(); assert hashlib.sha1(b'blob '+str(len(data)).encode()+bytes([0])+data).hexdigest() == '817cad8a9a94a9e66c0d0013a3d7a35baee0316f', 'Base worker handler changed; review the pre-upload guard before building'" \
+    && mv /handler.py /upstream_handler.py
+COPY rapidgen_handler.py /handler.py
+COPY workflow_guard.py safety_outcome.py /rapidgen/
+ENV PYTHONPATH=/rapidgen
+
+# Verify offline CPU inference and detector execution while building; no GPU needed.
+COPY scripts/validate_models.py /rapidgen/validate_models.py
+RUN RAPIDGEN_AGE_DEVICE=cpu python /rapidgen/validate_models.py
