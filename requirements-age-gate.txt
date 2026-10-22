@@ -1,0 +1,4 @@
+# ComfyUI supplies torch. Never install another torch/CUDA wheel here.
+transformers>=4.50,<5
+opencv-python-headless==4.11.0.86
+Pillow>=10.4,<13
