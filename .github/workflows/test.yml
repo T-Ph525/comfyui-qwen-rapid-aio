@@ -14,5 +14,10 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install numpy Pillow
+      - name: Fetch pinned MiVOLO node for pipeline integration tests
+        run: |
+          git clone https://github.com/vdeng-ai/ComfyUI-MiVolo-V2.git "$RUNNER_TEMP/mivolo-node"
+          git -C "$RUNNER_TEMP/mivolo-node" checkout 54354ff4cdd388974d7b3ac938a59ac88a58d27f
+          echo "MIVOLO_TEST_SOURCE=$RUNNER_TEMP/mivolo-node/py/age_gender_node.py" >> "$GITHUB_ENV"
       - run: python -m unittest discover -s tests -v
       - run: python -m compileall -q custom_nodes rapidgen_handler.py workflow_guard.py safety_outcome.py

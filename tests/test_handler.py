@@ -46,6 +46,7 @@ class HandlerTests(unittest.TestCase):
         worker,uploads=self.worker({'status_str':'success','completed':True,'messages':[]})
         result=handler(self.job(),worker)
         self.assertEqual(result['scanner'],'face-age-v1')
+        self.assertEqual(result['scanner_model'],'mivolo-v2-age-v1')
         self.assertEqual(len(result['images']),1)
         self.assertEqual(uploads,['S3-upload'])
 

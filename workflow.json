@@ -498,7 +498,7 @@
         "Node name for S&R": "RapidGenAgeGate"
       },
       "widgets_values": [],
-      "title": "Input face-age check"
+      "title": "Input MiVOLO age check"
     },
     {
       "id": 21,
@@ -577,7 +577,7 @@
         "Node name for S&R": "RapidGenAgeGate"
       },
       "widgets_values": [],
-      "title": "Output face-age check"
+      "title": "Output MiVOLO age check"
     }
   ],
   "links": [

@@ -20,7 +20,7 @@ def safety_outcome(history):
         exception = str(detail.get('exception_type', '')).rsplit('.', 1)[-1]
         # Never classify by exception_message: it may contain untrusted text.
         if exception == 'PolicyRejected':
-            return {'error_code': 'POLICY_REJECTED', 'message': 'The face-age check rejected this attempt.'}
+            return {'error_code': 'POLICY_REJECTED', 'message': 'The MiVOLO age check rejected this attempt.'}
         if exception == 'ScannerUnavailable':
-            return {'error_code': 'SCANNER_FAILURE', 'message': 'The face-age scanner could not run.'}
+            return {'error_code': 'SCANNER_FAILURE', 'message': 'The MiVOLO age scanner could not run.'}
     return None

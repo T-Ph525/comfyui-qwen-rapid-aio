@@ -10,28 +10,30 @@ spec = importlib.util.spec_from_file_location('rapidgen_age_gate', ROOT / '__ini
 module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-from rapidgen_age_gate.policy import check_scores, PolicyRejected, ScannerUnavailable
+from rapidgen_age_gate.policy import check_age, PolicyRejected, ScannerUnavailable
 
 
 class AgePolicyTests(unittest.TestCase):
-    def test_young_and_11_to_20_are_rejections(self):
-        for index in [0, 1]:
-            scores = [0.] * 8
-            scores[index] = 1.
+    def test_raw_under_18_is_rejected_without_rounding(self):
+        for age in [0., 10., 17., 17.6, 17.999]:
             with self.assertRaises(PolicyRejected):
-                check_scores(scores)
+                check_age(age)
 
-    def test_confident_older_group(self):
-        self.assertEqual(check_scores([.001, .001, .99, .002, .002, .002, .001, .001]), 'age 21-30')
+    def test_18_and_older_pass_literal_threshold(self):
+        for age in [18., 18.01, 20., 40.]:
+            self.assertEqual(check_age(age), age)
 
-    def test_uncertainty_is_policy_not_server_failure(self):
+    def test_operator_can_raise_but_not_lower_threshold(self):
         with self.assertRaises(PolicyRejected):
-            check_scores([.05, .1, .7, .05, .04, .03, .02, .01])
+            check_age(20., 21.)
+        for threshold in [17., math.nan, math.inf, 101., True]:
+            with self.assertRaises(ScannerUnavailable):
+                check_age(40., threshold)
 
     def test_bad_model_output_is_server_failure(self):
-        for scores in [[], [math.nan] * 8, [1.] * 8, [0.] * 8]:
+        for age in [None, math.nan, math.inf, -1., 200., '35', True]:
             with self.assertRaises(ScannerUnavailable):
-                check_scores(scores)
+                check_age(age)
 
     def test_every_reference_is_checked_and_passed_through(self):
         checked = []

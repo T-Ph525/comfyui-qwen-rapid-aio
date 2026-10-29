@@ -1,9 +1,10 @@
-"""ComfyUI passthrough gate. Only checked image outputs may reach SaveImage."""
+"""Mandatory MiVOLO V2 gate, retaining the existing Qwen workflow sockets."""
+import importlib.util
 import os
-import threading
 from pathlib import Path
+import threading
 
-from .policy import EXPECTED_LABELS, MODEL_ID, PolicyRejected, ScannerUnavailable, check_scores
+from .policy import PolicyRejected, ScannerUnavailable, check_age
 
 _ENGINE = None
 _LOCK = threading.RLock()
@@ -11,84 +12,119 @@ _LOCK = threading.RLock()
 
 def model_paths():
     import folder_paths
-    root = Path(folder_paths.models_dir) / "rapidgen"
-    model = Path(os.environ.get("RAPIDGEN_AGE_MODEL_DIR", root / "facial-age-detection"))
-    detector = Path(os.environ.get("RAPIDGEN_FACE_DETECTOR", root / "face_detection_yunet_2023mar.onnx"))
+    root = Path(folder_paths.models_dir)
+    model = Path(os.environ.get('RAPIDGEN_AGE_MODEL_DIR', root / 'mivolo/iitolstykh/mivolo_v2'))
+    detector = Path(os.environ.get('RAPIDGEN_FACE_DETECTOR', root / 'yolo/yolov8x_person_face.pt'))
     return model, detector
+
+
+def load_predictor_module():
+    # Load the installed, pinned extension's detector/crop/association pipeline.
+    # Do not rely on the arbitrary module name assigned by ComfyUI's loader.
+    import folder_paths
+    candidates = [Path(root) / 'ComfyUI-MiVolo-V2/py/age_gender_node.py'
+                  for root in folder_paths.get_folder_paths('custom_nodes')]
+    path = next((path for path in candidates if path.is_file()), None)
+    if path is None:
+        raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: ComfyUI-MiVolo-V2 is not installed')
+    spec = importlib.util.spec_from_file_location('rapidgen_mivolo_backend', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 class AgeEngine:
     def __init__(self):
-        import cv2
         import torch
         from transformers import AutoImageProcessor, AutoModelForImageClassification
+        from ultralytics import YOLO
+
         model_dir, detector_path = model_paths()
-        if not model_dir.is_dir() or not detector_path.is_file():
-            raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: age model or face detector is not installed")
+        required = ('config.json', 'preprocessor_config.json', 'model.safetensors',
+                    'configuration_mivolo.py', 'modeling_mivolo.py', 'mivolo_image_processor.py')
+        if any(not (model_dir / name).is_file() for name in required) or not detector_path.is_file():
+            raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: MiVOLO model or detector is not installed')
         self.torch = torch
-        self.cv2 = cv2
-        self.device = os.environ.get("RAPIDGEN_AGE_DEVICE", "cpu")
-        self.processor = AutoImageProcessor.from_pretrained(str(model_dir), local_files_only=True, trust_remote_code=False)
+        self.device = os.environ.get('RAPIDGEN_AGE_DEVICE', 'cpu')
+        self.minimum_age = float(os.environ.get('RAPIDGEN_MIN_AGE', '18'))
+        check_age(120., self.minimum_age)  # Validate configuration before inference.
+        self.processor = AutoImageProcessor.from_pretrained(
+            str(model_dir), local_files_only=True, trust_remote_code=True)
         self.model = AutoModelForImageClassification.from_pretrained(
-            str(model_dir), local_files_only=True, trust_remote_code=False, use_safetensors=True
+            str(model_dir), local_files_only=True, trust_remote_code=True,
+            use_safetensors=True, torch_dtype=torch.float32,
         ).to(self.device).eval()
-        labels = tuple(self.model.config.id2label.get(i) for i in range(8))
-        if labels != EXPECTED_LABELS or len(self.model.config.id2label) != 8:
-            raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: installed model has unexpected age labels")
-        self.detector = cv2.FaceDetectorYN.create(str(detector_path), "", (320, 320), 0.7, 0.3, 5000)
-        self.adult_confidence = float(os.environ.get("RAPIDGEN_ADULT_CONFIDENCE", "0.90"))
-        self.max_young_score = float(os.environ.get("RAPIDGEN_MAX_YOUNG_SCORE", "0.05"))
-        if not (0 < self.adult_confidence <= 1 and 0 <= self.max_young_score < 1):
-            raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: invalid age thresholds")
+        self.detector = YOLO(str(detector_path))
+        labels = {int(key): str(value).lower() for key, value in self.detector.names.items()}
+        if labels != {0: 'person', 1: 'face'}:
+            raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: unexpected detector classes')
+        upstream = load_predictor_module()
+        self.predictor = upstream.MiVOLOAgeGenderPredictorWithDetector()
+        # Upstream rounds ages to integers. Replace only its single-subject
+        # inference hook; keep its All-mode face/body association and crops.
+        self.predictor._predict_single = self.predict_raw
+        self.predictions = []
+
+    def predict_raw(self, model_pack, face_crop, body_crop):
+        # Body-only estimates are not sufficient for this service's policy.
+        if face_crop is None or min(face_crop.shape[:2]) < 32:
+            raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: no assessable face for a subject')
+        inputs = {}
+        for key, crop in (('faces_input', face_crop), ('body_input', body_crop)):
+            values = self.processor(images=[crop])['pixel_values']
+            inputs[key] = None if values is None else values.to(device=self.device, dtype=self.model.dtype)
+        with self.torch.inference_mode():
+            output = self.model(**inputs).age_output
+        if output is None or tuple(output.shape) != (1, 1):
+            raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: missing age prediction')
+        age = check_age(output[0].item(), self.minimum_age)
+        self.predictions.append(age)
+        # Do not emit gender or round age; only the numeric result is relevant.
+        return ('Age checked', age, '')
+
+    def detect(self, bgr, **kwargs):
+        """Validate detections before upstream can silently skip invalid crops."""
+        import numpy as np
+        results = self.detector(bgr, device=self.device, **kwargs)
+        if not results or len(results) != 1 or results[0].boxes is None:
+            raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: no assessable subjects')
+        boxes = results[0].boxes
+        if len(boxes) == 0:
+            raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: no assessable subjects')
+        if len(boxes) > 64:
+            raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: too many subjects to assess')
+        height, width = bgr.shape[:2]
+        for box in boxes:
+            class_id = int(box.cls.item())
+            coords = box.xyxy[0].cpu().numpy()
+            if class_id not in (0, 1) or not np.isfinite(coords).all():
+                raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: invalid detector output')
+            x1, y1, x2, y2 = coords
+            if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height) or int(x2) <= int(x1) or int(y2) <= int(y1):
+                raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: unassessable subject bounds')
+            if class_id == 1 and min(x2 - x1, y2 - y1) < 32:
+                raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: face too small to assess')
+        return results
 
     def check(self, tensor):
         import numpy as np
-        from PIL import Image
         if len(tensor.shape) != 4 or tensor.shape[0] < 1 or tensor.shape[-1] != 3:
-            raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: expected a ComfyUI RGB IMAGE batch")
+            raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: expected a ComfyUI RGB IMAGE batch')
         if tensor.shape[0] > 4:
-            raise PolicyRejected("RAPIDGEN_POLICY_REJECTED: too many images")
-        for sample in tensor:
-            rgb = sample.detach().cpu().numpy()
-            if not np.isfinite(rgb).all():
-                raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: non-finite image")
-            rgb = np.uint8(np.clip(rgb, 0, 1) * 255)
-            height, width = rgb.shape[:2]
-            if width * height > 16000000:
-                raise PolicyRejected("RAPIDGEN_POLICY_REJECTED: image too large for age check")
-            scale = min(1.0, 1600 / max(width, height))
-            bgr = self.cv2.cvtColor(rgb, self.cv2.COLOR_RGB2BGR)
-            if scale < 1:
-                bgr = self.cv2.resize(bgr, (round(width * scale), round(height * scale)))
-            # Pad to the detector's stride without stretching facial geometry.
-            pad_h, pad_w = (-bgr.shape[0]) % 32, (-bgr.shape[1]) % 32
-            if pad_h or pad_w:
-                bgr = self.cv2.copyMakeBorder(bgr, 0, pad_h, 0, pad_w, self.cv2.BORDER_CONSTANT, value=(0, 0, 0))
-            self.detector.setInputSize((bgr.shape[1], bgr.shape[0]))
-            _, faces = self.detector.detect(bgr)
-            if faces is None or len(faces) == 0:
-                raise PolicyRejected("RAPIDGEN_POLICY_REJECTED: no assessable face")
-            if len(faces) > 16:
-                raise PolicyRejected("RAPIDGEN_POLICY_REJECTED: too many faces to assess")
-            crops = []
-            for face in faces:
-                x, y, w, h = [float(value) / scale for value in face[:4]]
-                if min(w, h) < 32:
-                    raise PolicyRejected("RAPIDGEN_POLICY_REJECTED: face too small to assess")
-                # Small margin retains facial context without classifying the
-                # whole scene or choosing only the largest/oldest person.
-                left, top = max(0, int(x - w * .1)), max(0, int(y - h * .1))
-                right, bottom = min(width, int(x + w * 1.1)), min(height, int(y + h * 1.1))
-                if right <= left or bottom <= top:
-                    raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: invalid face bounds")
-                crops.append(Image.fromarray(rgb[top:bottom, left:right]))
-            inputs = self.processor(images=crops, return_tensors="pt").to(self.device)
-            with self.torch.inference_mode():
-                scores = self.model(**inputs).logits.softmax(dim=-1).cpu().tolist()
-            if len(scores) != len(crops):
-                raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: missing age predictions")
-            for probabilities in scores:
-                check_scores(probabilities, self.adult_confidence, self.max_young_score)
+            raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: too many images')
+        # Upstream only processes batch[0]; invoke it once per image instead.
+        for index in range(tensor.shape[0]):
+            sample = tensor[index:index + 1]
+            pixels = sample.detach().cpu().numpy()
+            if not np.isfinite(pixels).all():
+                raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: non-finite image')
+            if tensor.shape[1] * tensor.shape[2] > 16000000:
+                raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: image too large for age check')
+            self.predictions = []
+            self.predictor.predict_with_detector(
+                None, self.detect, sample, 'Use persons and faces', 'All', 0.4, 0.7)
+            if not self.predictions:
+                raise PolicyRejected('RAPIDGEN_POLICY_REJECTED: no assessable face')
 
 
 def get_engine():
@@ -103,19 +139,18 @@ class RapidGenAgeGate:
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {"image1": ("IMAGE",), "prompt": ("STRING", {"forceInput": True})},
-            "optional": {"image2": ("IMAGE",), "image3": ("IMAGE",), "image4": ("IMAGE",)},
+            'required': {'image1': ('IMAGE',), 'prompt': ('STRING', {'forceInput': True})},
+            'optional': {'image2': ('IMAGE',), 'image3': ('IMAGE',), 'image4': ('IMAGE',)},
         }
 
-    RETURN_TYPES = ("IMAGE", "IMAGE", "IMAGE", "IMAGE", "STRING")
-    RETURN_NAMES = ("checked_image1", "checked_image2", "checked_image3", "checked_image4", "prompt")
-    FUNCTION = "check"
-    CATEGORY = "RapidGen/Safety"
+    RETURN_TYPES = ('IMAGE', 'IMAGE', 'IMAGE', 'IMAGE', 'STRING')
+    RETURN_NAMES = ('checked_image1', 'checked_image2', 'checked_image3', 'checked_image4', 'prompt')
+    FUNCTION = 'check'
+    CATEGORY = 'RapidGen/Safety'
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        # Policy/configuration may have changed since the previous run.
-        return float("nan")
+        return float('nan')
 
     def check(self, image1, prompt, image2=None, image3=None, image4=None):
         images = (image1, image2, image3, image4)
@@ -128,10 +163,9 @@ class RapidGenAgeGate:
         except (PolicyRejected, ScannerUnavailable):
             raise
         except Exception as error:
-            # Never turn dependency/OOM/decoder/model errors into an approval.
-            raise ScannerUnavailable("RAPIDGEN_SCANNER_FAILURE: age check could not run") from error
+            raise ScannerUnavailable('RAPIDGEN_SCANNER_FAILURE: MiVOLO age check could not run') from error
         return (*images, prompt)
 
 
-NODE_CLASS_MAPPINGS = {"RapidGenAgeGate": RapidGenAgeGate}
-NODE_DISPLAY_NAME_MAPPINGS = {"RapidGenAgeGate": "RapidGen Face Age Gate"}
+NODE_CLASS_MAPPINGS = {'RapidGenAgeGate': RapidGenAgeGate}
+NODE_DISPLAY_NAME_MAPPINGS = {'RapidGenAgeGate': 'RapidGen MiVOLO Age Safety Gate'}
