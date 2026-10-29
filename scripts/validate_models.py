@@ -2,10 +2,12 @@
 import sys
 import numpy as np
 
-# Importing the upstream node imports comfy.model_management. Select CPU before
-# that import so image builds never attempt to initialize a CUDA device.
-sys.argv.append('--cpu')
+# ComfyUI disables argument parsing for imported modules, so adding --cpu to
+# sys.argv does not select CPU here. Set the parsed option before any upstream
+# node can import comfy.model_management and initialize CUDA. Build process only.
 sys.path.insert(0, '/comfyui')
+from comfy.cli_args import args
+args.cpu = True
 from custom_nodes.rapidgen_age_gate import get_engine, model_paths
 from custom_nodes.rapidgen_age_gate.policy import PolicyRejected
 
