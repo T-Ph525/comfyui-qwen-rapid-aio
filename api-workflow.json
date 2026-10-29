@@ -138,7 +138,7 @@
       "prompt": "Make him naked"
     },
     "_meta": {
-      "title": "Input face-age check"
+      "title": "Input MiVOLO age check"
     }
   },
   "21": {
@@ -154,7 +154,7 @@
       ]
     },
     "_meta": {
-      "title": "Output face-age check"
+      "title": "Output MiVOLO age check"
     }
   }
 }

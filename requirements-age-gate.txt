@@ -1,4 +1,12 @@
-# ComfyUI supplies torch. Never install another torch/CUDA wheel here.
-transformers>=4.50,<5
-opencv-python-headless==4.11.0.86
+# Reuse the base worker's torch/torchvision/CUDA wheels via build constraints.
+transformers>=4.51,<5
+accelerate>=1.8.1,<2
+huggingface_hub>=0.23,<1
+ultralytics==8.3.75
+opencv-python==4.11.0.86
+numpy>=1.25,<3
 Pillow>=10.4,<13
+timm==0.8.13.dev0
+lapx>=0.5.2,<1
+omegaconf==2.3.0
+setuptools<81

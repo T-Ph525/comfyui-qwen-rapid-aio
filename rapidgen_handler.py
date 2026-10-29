@@ -74,7 +74,7 @@ def handler(job, upstream=None):
             return {'error_code': 'WORKFLOW_FAILURE', 'billing_outcome': 'REVIEW', 'message': 'The worker could not complete the request.'}
         if not isinstance(result, dict) or not result.get('images') or result.get('error') or result.get('errors'):
             return {'error_code': 'WORKFLOW_FAILURE', 'billing_outcome': 'REVIEW', 'message': 'The worker did not deliver a complete result.'}
-        return {**result, 'billing_outcome': 'CHARGE', 'scanner': 'face-age-v1'}
+        return {**result, 'billing_outcome': 'CHARGE', 'scanner': 'face-age-v1', 'scanner_model': 'mivolo-v2-age-v1'}
 
 
 if __name__ == '__main__':
