@@ -153,3 +153,25 @@ license. The MiVOLO V2 Hugging Face model card lists Apache-2.0, while the
 person/face detector lists AGPL-3.0 and Ultralytics has its own licensing options.
 Review the relevant upstream terms for your commercial deployment and any
 redistribution. Pinned source and model revisions are recorded in the Dockerfile.
+
+## Text-to-image requests
+
+The same v23 checkpoint also has a text-only conditioning path. Send
+`text-to-image-workflow.json` as `input.workflow`, set
+`input.mode` to `"text-to-image"`, and send `input.images: []`. There are no
+reference uploads, input age gates or edit LoRA in this graph. The wrapper still
+adds mandatory output age gates to every exported image and checks history
+before S3 upload. Missing/unknown mode does not enable text-only requests.
+Existing image-edit requests continue to default to `"edit"`.
+
+Rebuild and deploy this worker **before** deploying the matching Firebase API
+and frontend in `rapidgen-ai`. No new weights are needed. Verify that the pinned
+ComfyUI build exposes `TextEncodeQwenImageEdit`, then validate generation quality
+and live gate execution on the GPU; CPU unit tests do not execute the diffusion
+model. The example uses a clearly adult portrait and seed 42.
+
+The existing scanner policy is unchanged: no assessable subjects, missing/tiny
+faces and estimated minors are rejected without returning any images. This can
+block landscapes, abstract art and some adult portraits too. Policy and input
+rejections remain charged; scanner faults retain the confirmed-server-failure
+marker. Model age estimates do not prove actual age or consent.

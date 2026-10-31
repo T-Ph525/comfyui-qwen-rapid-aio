@@ -8,7 +8,7 @@ import re
 
 ALLOWED_NODES = {
     'CheckpointLoaderSimple', 'LoraLoader', 'KSampler', 'VAEDecode',
-    'TextEncodeQwenImageEditPlus', 'LoadImage', 'EmptyLatentImage',
+    'TextEncodeQwenImageEditPlus', 'TextEncodeQwenImageEdit', 'LoadImage', 'EmptyLatentImage',
     'SaveImage', 'PreviewImage', 'RapidGenAgeGate',
 }
 GATE_TYPE = 'RapidGenAgeGate'
@@ -22,7 +22,10 @@ def is_link(value):
     return isinstance(value, list) and len(value) == 2 and isinstance(value[0], str) and type(value[1]) is int
 
 
-def protect_workflow(workflow, images):
+def protect_workflow(workflow, images, mode='edit'):
+    if mode not in ('edit', 'text-to-image'):
+        raise InputRejected('Unsupported generation mode.')
+    text_mode = mode == 'text-to-image'
     if not isinstance(workflow, dict) or not workflow or len(workflow) > 40:
         raise InputRejected('Unsupported workflow.')
     graph = deepcopy(workflow)
@@ -55,8 +58,8 @@ def protect_workflow(workflow, images):
     loads = [key for key, node in graph.items() if node['class_type'] == 'LoadImage']
     samplers = [key for key, node in graph.items() if node['class_type'] == 'KSampler']
     outputs = [key for key, node in graph.items() if node['class_type'] in {'SaveImage', 'PreviewImage'}]
-    if not (1 <= len(loads) <= 4 and len(samplers) == 1 and 1 <= len(outputs) <= 4):
-        raise InputRejected('Expected 1–4 input images, one sampler and 1–4 outputs.')
+    if not ((len(loads) == 0 if text_mode else 1 <= len(loads) <= 4) and len(samplers) == 1 and 1 <= len(outputs) <= 4):
+        raise InputRejected('Unexpected image inputs, sampler count or outputs for the generation mode.')
     if not isinstance(images, list) or len(images) != len(loads):
         raise InputRejected('Upload every reference image with the request.')
     names = []
@@ -72,7 +75,7 @@ def protect_workflow(workflow, images):
         raise InputRejected('Reference image uploads must match the workflow.')
 
     positive = graph[samplers[0]]['inputs'].get('positive')
-    if not is_link(positive) or positive[0] not in graph or graph[positive[0]]['class_type'] != 'TextEncodeQwenImageEditPlus':
+    if not is_link(positive) or positive[0] not in graph or graph[positive[0]]['class_type'] != ('TextEncodeQwenImageEdit' if text_mode else 'TextEncodeQwenImageEditPlus'):
         raise InputRejected('Unsupported positive conditioning.')
     encoder = graph[positive[0]]
     prompt = encoder['inputs'].get('prompt')
@@ -86,17 +89,20 @@ def protect_workflow(workflow, images):
             number += 1
         return str(number)
 
-    pre = new_id()
-    gate_inputs = {'prompt': prompt}
-    for slot, load in enumerate(loads):
-        gate_inputs['image' + str(slot + 1)] = [load, 0]
-    replacements = {load: [pre, slot] for slot, load in enumerate(loads)}
-    for node in graph.values():
-        for name, value in list(node['inputs'].items()):
-            if is_link(value) and value[0] in replacements and value[1] == 0:
-                node['inputs'][name] = replacements[value[0]]
-    graph[pre] = {'class_type': GATE_TYPE, 'inputs': gate_inputs}
-    encoder['inputs']['prompt'] = [pre, 4]
+    prompt_source = prompt
+    if not text_mode:
+        pre = new_id()
+        gate_inputs = {'prompt': prompt}
+        for slot, load in enumerate(loads):
+            gate_inputs['image' + str(slot + 1)] = [load, 0]
+        replacements = {load: [pre, slot] for slot, load in enumerate(loads)}
+        for node in graph.values():
+            for name, value in list(node['inputs'].items()):
+                if is_link(value) and value[0] in replacements and value[1] == 0:
+                    node['inputs'][name] = replacements[value[0]]
+        graph[pre] = {'class_type': GATE_TYPE, 'inputs': gate_inputs}
+        encoder['inputs']['prompt'] = [pre, 4]
+        prompt_source = [pre, 4]
 
     # Every exported image passes an independent output gate. Even a malicious
     # extra PreviewImage cannot export a reference or an unchecked decode.
@@ -105,7 +111,7 @@ def protect_workflow(workflow, images):
         if not is_link(source) or source[0] not in graph:
             raise InputRejected('Invalid image output connection.')
         post = new_id()
-        graph[post] = {'class_type': GATE_TYPE, 'inputs': {'image1': source, 'prompt': [pre, 4]}}
+        graph[post] = {'class_type': GATE_TYPE, 'inputs': {'image1': source, 'prompt': prompt_source}}
         graph[output]['inputs']['images'] = [post, 0]
     # Enforce graph validity/cycle checks before queueing any compute.
     visiting, done = set(), set()

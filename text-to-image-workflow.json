@@ -1,0 +1,96 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "v23/Qwen-Rapid-AIO-NSFW-v23.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "10",
+        0
+      ],
+      "negative": [
+        "4",
+        0
+      ],
+      "latent_image": [
+        "9",
+        0
+      ],
+      "seed": 42,
+      "steps": 4,
+      "cfg": 1,
+      "sampler_name": "sa_solver",
+      "scheduler": "beta",
+      "denoise": 1
+    }
+  },
+  "4": {
+    "class_type": "TextEncodeQwenImageEdit",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "prompt": ""
+    }
+  },
+  "5": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "2",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    }
+  },
+  "6": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "images": [
+        "21",
+        0
+      ],
+      "filename_prefix": "RapidGen"
+    }
+  },
+  "9": {
+    "class_type": "EmptyLatentImage",
+    "inputs": {
+      "width": 768,
+      "height": 768,
+      "batch_size": 1
+    }
+  },
+  "10": {
+    "class_type": "TextEncodeQwenImageEdit",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "prompt": "Portrait photo of an adult aged 35, soft window light, warm colors"
+    }
+  },
+  "21": {
+    "class_type": "RapidGenAgeGate",
+    "inputs": {
+      "image1": [
+        "5",
+        0
+      ],
+      "prompt": "Portrait photo of an adult aged 35, soft window light, warm colors"
+    }
+  }
+}

@@ -76,3 +76,53 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(nodes[target]['inputs'][target_slot]['link'],link_id)
         self.assertEqual(nodes[6]['type'],'SaveImage')
         self.assertEqual(nodes[1]['widgets_values'][0], 'v23/Qwen-Rapid-AIO-NSFW-v23.safetensors')
+
+
+def text_example():
+    return json.loads((ROOT / 'text-to-image-workflow.json').read_text()), []
+
+
+class TextToImageWorkflowTests(unittest.TestCase):
+    def test_text_only_graph_has_no_input_gate_and_every_export_is_checked(self):
+        graph, images = text_example()
+        graph['99'] = {'class_type': 'PreviewImage', 'inputs': {'images': ['5', 0]}}
+        protected = protect_workflow(graph, images, 'text-to-image')
+        self.assertFalse(any(node['class_type'] == 'LoadImage' for node in protected.values()))
+        self.assertEqual(protected['10']['inputs']['prompt'], graph['10']['inputs']['prompt'])
+        for output in ('6', '99'):
+            gate = protected[output]['inputs']['images'][0]
+            self.assertEqual(protected[gate]['class_type'], 'RapidGenAgeGate')
+            self.assertEqual(protected[gate]['inputs']['image1'], ['5', 0])
+        self.assertEqual(sum(node['class_type'] == 'RapidGenAgeGate' for node in protected.values()), 2)
+
+    def test_missing_or_unknown_mode_does_not_enable_text_only(self):
+        graph, images = text_example()
+        for mode in ('edit', 'unknown', None):
+            with self.assertRaises(InputRejected):
+                protect_workflow(graph, images, mode)
+
+    def test_text_mode_rejects_uploads_and_hidden_loaders(self):
+        graph, _ = text_example()
+        with self.assertRaises(InputRejected):
+            protect_workflow(graph, [{'name': 'photo.png', 'image': 'data'}], 'text-to-image')
+        graph['8'] = {'class_type': 'LoadImage', 'inputs': {'image': 'photo.png'}}
+        with self.assertRaises(InputRejected):
+            protect_workflow(graph, [], 'text-to-image')
+
+    def test_text_output_gate_is_inserted_even_if_caller_removes_it(self):
+        graph, images = text_example()
+        del graph['21']
+        graph['6']['inputs']['images'] = ['5', 0]
+        protected = protect_workflow(graph, images, 'text-to-image')
+        gate = protected['6']['inputs']['images'][0]
+        self.assertEqual(protected[gate]['class_type'], 'RapidGenAgeGate')
+
+    def test_text_mode_rejects_cycles_and_unsupported_conditioning(self):
+        graph, images = text_example()
+        graph['5']['inputs']['samples'] = ['5', 0]
+        with self.assertRaises(InputRejected):
+            protect_workflow(graph, images, 'text-to-image')
+        graph, images = text_example()
+        graph['10']['class_type'] = 'TextEncodeQwenImageEditPlus'
+        with self.assertRaises(InputRejected):
+            protect_workflow(graph, images, 'text-to-image')

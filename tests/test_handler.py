@@ -56,3 +56,10 @@ class HandlerTests(unittest.TestCase):
         job['input']['workflow']['99']={'class_type':'UnsafeUploader','inputs':{}}
         self.assertEqual(handler(job,worker)['error_code'],'INPUT_REJECTED')
         self.assertEqual(uploads,[])
+
+
+class TextToImageHandlerTests(HandlerTests):
+    def job(self):
+        from tests.test_workflow_guard import text_example
+        workflow, images = text_example()
+        return {'id': 'text-job', 'input': {'mode': 'text-to-image', 'workflow': workflow, 'images': images}}

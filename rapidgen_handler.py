@@ -61,9 +61,9 @@ def handler(job, upstream=None):
             data = protected.get('input', {})
             if not isinstance(data, dict):
                 raise InputRejected('Invalid job input.')
-            data['workflow'] = protect_workflow(data.get('workflow'), data.get('images'))
+            data['workflow'] = protect_workflow(data.get('workflow'), data.get('images'), data.get('mode', 'edit'))
         except (InputRejected, TypeError, AttributeError):
-            return {'error_code': 'INPUT_REJECTED', 'billing_outcome': 'CHARGE', 'message': 'Unsupported or invalid image-edit request.'}
+            return {'error_code': 'INPUT_REJECTED', 'billing_outcome': 'CHARGE', 'message': 'Unsupported or invalid generation request.'}
         try:
             result = (upstream or load_upstream()).handler(protected)
         except StopBeforeUpload as stopped:
